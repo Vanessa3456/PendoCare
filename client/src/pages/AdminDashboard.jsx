@@ -44,14 +44,19 @@ const AdminDashboard = () => {
                 api.get('/admin/counselors')
             ]);
 
+            console.log("Pending Data:", pendingRes.data);
+            console.log("Approved Data:", approvedRes.data);
+            console.log("Counselors Data:", counselorsRes.data);
 
-
-            setPendingRequests(pendingRes.data);
-            setApprovedSchools(approvedRes.data);
-            setCounselors(counselorsRes.data);
+            setPendingRequests(pendingRes.data || []);
+            setApprovedSchools(approvedRes.data || []);
+            setCounselors(counselorsRes.data || []);
         } catch (err) {
             console.error("Error fetching admin data:", err);
-            console.error("Error details:", err.response?.data);
+            if (err.response) {
+                console.error("Status:", err.response.status);
+                console.error("Data:", err.response.data);
+            }
         } finally {
             setLoading(false);
         }

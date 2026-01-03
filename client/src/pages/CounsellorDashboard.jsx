@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import {
@@ -12,8 +13,8 @@ import { motion, AnimatePresence } from "framer-motion";
 const SOCKET_URL = import.meta.env.VITE_API_URL;
 // socket instance
 const socket = io(SOCKET_URL, {
-  path: "/socket.io",
-  transports: ["websocket"]
+    path: "/socket.io",
+    transports: ["websocket"]
 });
 
 socket.on("connect", () => console.log("Connected ✅ on counsellor side"));
