@@ -39,9 +39,9 @@ const AdminDashboard = () => {
         setLoading(true);
         try {
             const [pendingRes, approvedRes, counselorsRes] = await Promise.all([
-                api.get('/admin/requests'),
-                api.get('/admin/schools/approved'),
-                api.get('/admin/counselors')
+                api.get('api/admin/requests'),
+                api.get('api/admin/schools/approved'),
+                api.get('api/admin/counselors')
             ]);
 
             console.log("Pending Data:", pendingRes.data);
@@ -64,7 +64,7 @@ const AdminDashboard = () => {
 
     const handleApprove = async (id) => {
         try {
-            const response = await api.post(`/admin/approve/${id}`);
+            const response = await api.post(`api/admin/approve/${id}`);
             const { accessCode, emailSent } = response.data;
             alert(emailSent ? `Success! Code ${accessCode} sent.` : `Approved! Code: ${accessCode}`);
             fetchAllData();
@@ -76,7 +76,7 @@ const AdminDashboard = () => {
     const handleReject = async (id) => {
         if (confirm("Reject this request?")) {
             try {
-                await api.delete(`/admin/request/${id}`);
+                await api.delete(`api/admin/request/${id}`);
                 fetchAllData();
             } catch (err) {
                 alert("Failed to reject.");
@@ -90,10 +90,10 @@ const AdminDashboard = () => {
         try {
             let response;
             if (isEditingCounselor) {
-                response = await api.put(`/admin/counselors/${currentCounselor.id}`, currentCounselor);
+                response = await api.put(`api/admin/counselors/${currentCounselor.id}`, currentCounselor);
                 alert("Counselor updated successfully!");
             } else {
-                response = await api.post('/admin/counselors', currentCounselor);
+                response = await api.post('api/admin/counselors', currentCounselor);
                 const { access_code, emailSent } = response.data;
                 const emailStatus = emailSent ? "Email sent successfully!" : "Email failed to send.";
                 alert(`✅ Counselor registered successfully!\n\nAccess Code: ${access_code}\n\n${emailStatus}\n\nThe counselor can use this code to access their dashboard.`);
@@ -115,7 +115,7 @@ const AdminDashboard = () => {
     const handleDeleteCounselor = async (id) => {
         if (confirm("Delete this counselor?")) {
             try {
-                await api.delete(`/admin/counselors/${id}`);
+                await api.delete(`api/admin/counselors/${id}`);
                 fetchAllData();
             } catch (err) {
                 alert("Failed to delete counselor.");
