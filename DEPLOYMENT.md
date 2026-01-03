@@ -19,12 +19,22 @@ We deploy the backend first because the frontend needs the backend URL.
 2.  Log in to **Render** and click **New +** -> **Web Service**.
 3.  Connect your PendoCare repository.
 4.  **Configure the Service:**
-    -   **Name:** `pendocare-api` (or similar)
-    -   **Root Directory:** `server` (Important!)
+
+    **Option A: Standard Node Deployment (Simpler)**
+    -   **Name:** `pendocare-api`
+    -   **Root Directory:** `server`
     -   **Environment:** Node
     -   **Build Command:** `npm install`
     -   **Start Command:** `node index.js`
     -   **Plan:** Free
+
+    **Option B: Docker Deployment (Recommended for Consistency)**
+    -   **Name:** `pendocare-api-docker`
+    -   **Root Directory:** `server`
+    -   **Environment:** Docker
+    -   **Dockerfile Path:** `Dockerfile` (or `./Dockerfile`)
+    -   **Plan:** Free
+    -   *Note: Render will automatically detect the Dockerfile in the server directory.*
 
 5.  **Environment Variables** (Click "Advanced" or "Environment" tab):
     Add the following variables based on your `server/.env` file:
