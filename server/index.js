@@ -12,15 +12,15 @@ const jwt = require('jsonwebtoken');
 
 // --- Initialization ---
 const app = express();
-const server = http.createServer(app);
+
 const allowedOrigins = [
   "http://localhost:5173",
-   process.env.CLIENT_URL
-];
+  process.env.CLIENT_URL
+].filter(Boolean); // remove undefined
 
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin) return callback(null, true); // allow non-browser requests like Postman
+    if (!origin) return callback(null, true); // allow Postman, curl
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error('CORS not allowed'));
   },
@@ -29,17 +29,25 @@ app.use(cors({
   allowedHeaders: ["Content-Type","Authorization"]
 }));
 
-// Handle preflight requests explicitly
-app.options('/*', cors());
+// Preflight for all routes (required for browser polling)
+app.options('/*', cors({
+  origin: allowedOrigins,
+  credentials: true,
+  methods: ["GET","POST","PUT","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"]
+}));
+
+const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: allowedOrigins, // must exactly match the frontends
     methods: ["GET", "POST"],
     credentials: true
   },
   transports: ["websocket", "polling"]
 });
+
 
 
 // --- Middleware ---
