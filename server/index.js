@@ -15,19 +15,22 @@ const app = express();
 const server = http.createServer(app);
 const allowedOrigins = [
   "http://localhost:5173",
-  process.env.CLIENT_URL
+   process.env.CLIENT_URL
 ];
 
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("CORS not allowed"));
-    }
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true); // allow non-browser requests like Postman
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('CORS not allowed'));
   },
-  credentials: true
+  credentials: true,
+  methods: ["GET","POST","PUT","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"]
 }));
+
+// Handle preflight requests explicitly
+app.options('*', cors());
 
 const io = new Server(server, {
   cors: {
@@ -42,7 +45,6 @@ const io = new Server(server, {
 // --- Middleware ---
 app.use(helmet()); // Basic security headers
 app.use(morgan('dev')); // Logging
-app.use(cors());
 app.use(express.json());
 
 // --- Supabase Config ---
