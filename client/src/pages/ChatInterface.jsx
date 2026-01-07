@@ -1,122 +1,92 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../services/api";
+import {
+    getOrCreateConversation,
+    sendMessage,
+    subscribeToConversation,
+    parseConversationLog
+} from "../services/chatService";
 import {
     ArrowLeft, Paperclip, Mic, Send, MoreVertical, Phone, Video,
     Check, CheckCheck, User, Clock, ShieldAlert
 } from "lucide-react";
-import { io } from "socket.io-client";
 import { motion, AnimatePresence } from "framer-motion";
-
-const SOCKET_URL = import.meta.env.VITE_API_URL;
-
-// socket instance
-const socket = io(SOCKET_URL, {
-  path: "/socket.io",
-  transports: ["websocket"]
-});
-
-socket.on("connect", () => console.log("Connected ✅ on student side"));
 
 const ChatInterface = () => {
     const navigate = useNavigate();
-    const studentName = localStorage.getItem('user_name') || 'Student';
+    // Access Code used as ID
+    const studentCode = localStorage.getItem('user_name'); // e.g. NRB-1234
     const schoolName = localStorage.getItem('school_name') || 'Unknown School';
-    const STUDENT_ID = studentName.toLowerCase().replace(/\s+/g, '_');
 
+    const [conversation, setConversation] = useState(null);
     const [messages, setMessages] = useState([]);
     const [inputText, setInputText] = useState("");
-    const [isConnected, setIsConnected] = useState(false);
-    const [counselor, setCounselor] = useState(null);
+    const [isSending, setIsSending] = useState(false);
+
     const messagesEndRef = useRef(null);
 
-    const [roomId] = useState(`room_${STUDENT_ID}`);
-
-    // 1. Connect and Join Room
+    // 1. Initialize Conversation
     useEffect(() => {
-        const handleConnect = () => {
-            console.log("[Student] Connected/Reconnected, joining room:", roomId);
-            socket.emit("join_room", roomId);
-        };
+        let subscription = null;
 
-        // Initial join
-        socket.emit("join_room", roomId);
-        setIsConnected(true);
+        const initChat = async () => {
+            if (!studentCode) {
+                navigate('/login');
+                return;
+            }
 
-        // Alert counselor with school info
-        socket.emit("request_counselor", {
-            studentId: studentName,
-            roomId,
-            schoolName
-        });
+            console.log("[Chat] Initializing for:", studentCode);
+            try {
+                const conv = await getOrCreateConversation(studentCode);
 
-        socket.on("connect", handleConnect);
+                if (conv) {
+                    setConversation(conv);
+                    setMessages(parseConversationLog(conv.content));
 
-        return () => {
-            socket.off("connect", handleConnect);
-            socket.off("join_room");
-        };
-    }, [roomId, studentName, schoolName]);
-
-    // 2. Listen for Incoming Messages & Counselor Joining
-    useEffect(() => {
-        const handleReceiveMessage = (data) => {
-            // Only add if it's for this specific room AND not from self
-            if (data.room === roomId && data.senderId !== STUDENT_ID) {
-                setMessages((prev) => [...prev, data]);
+                    // Subscribe to Realtime Updates
+                    subscription = subscribeToConversation(conv.id, (updatedConv) => {
+                        console.log("[Realtime] Update:", updatedConv);
+                        setConversation(updatedConv);
+                        setMessages(parseConversationLog(updatedConv.content));
+                    });
+                }
+            } catch (err) {
+                console.error("Chat init failed", err);
             }
         };
 
-        socket.on("receive_message", handleReceiveMessage);
-
-        socket.on("counselor_joined", (counselorData) => {
-            setCounselor(counselorData);
-            // System message
-            setMessages((prev) => [...prev, {
-                id: Date.now(),
-                type: 'system',
-                text: `${counselorData.name} has joined the chat.`
-            }]);
-        });
+        initChat();
 
         return () => {
-            socket.off("receive_message", handleReceiveMessage);
-            socket.off("counselor_joined");
+            if (subscription) subscription.unsubscribe();
         };
-    }, [roomId, STUDENT_ID]);
+    }, [studentCode, navigate]);
 
-    // 3. Auto-scroll to bottom
+    // 2. Auto-scroll
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
 
-    const handleSendMessage = async (e) => {
-        e?.preventDefault();
-        if (!inputText.trim()) return;
+    const handleSendMessage = async () => {
+        if (!inputText.trim() || !conversation) return;
 
-        const newMessage = {
-            room: roomId,
-            text: inputText,
-            senderId: STUDENT_ID,
-            role: 'student',
-            timestamp: new Date().toISOString(),
-        };
+        const text = inputText;
+        setInputText(""); // Optimistic clear
+        setIsSending(true);
 
-        // Optimistic Update
-        setMessages((prev) => [...prev, newMessage]);
-
-        // Send to Socket
-        socket.emit("send_message", newMessage);
-
-        // Save to DB
         try {
-            await api.post('/chat/save', newMessage);
+            await sendMessage(conversation.id, 'student', text);
+            // Result will come via Realtime subscription
         } catch (err) {
-            console.error("Failed to save message", err);
+            console.error("Failed to send:", err);
+            setInputText(text); // Revert on failure
+        } finally {
+            setIsSending(false);
         }
-
-        setInputText("");
     };
+
+    // Determine Counsellor Status
+    const isCounsellorConnected = !!conversation?.counsellor_id;
 
     return (
         <div className="min-h-screen bg-[#E5DDD5] flex flex-col relative overflow-hidden">
@@ -130,19 +100,15 @@ const ChatInterface = () => {
                 </button>
 
                 <div className="w-10 h-10 bg-slate-300 rounded-full flex items-center justify-center overflow-hidden mr-3 border border-white/20">
-                    {counselor ? (
-                        <img src={`https://ui-avatars.com/api/?name=${counselor.name}&background=random`} alt="Counselor" />
-                    ) : (
-                        <User className="text-slate-500" />
-                    )}
+                    <User className="text-slate-500" />
                 </div>
 
                 <div className="flex-1">
                     <h1 className="font-bold text-lg leading-tight">
-                        {counselor ? counselor.name : "Waiting for Counselor..."}
+                        {isCounsellorConnected ? "Counsellor Connected" : "Waiting for Counsellor..."}
                     </h1>
                     <p className="text-xs text-green-100 opacity-90 truncate">
-                        {counselor ? "Online" : "Connecting you to a professional..."}
+                        {isCounsellorConnected ? "Online" : "Connecting you to a professional..."}
                     </p>
                 </div>
 
@@ -160,23 +126,14 @@ const ChatInterface = () => {
                 <div className="flex justify-center mb-6">
                     <div className="bg-[#FFF5C4] text-[#5E5151] text-xs px-3 py-1.5 rounded-lg shadow-sm flex items-center gap-1.5 max-w-[85%] text-center">
                         <ShieldAlert size={12} className="shrink-0" />
-                        <span>Messages and calls are end-to-end encrypted. No one outside of this chat, not even Pendo, can read or listen to them.</span>
+                        <span>Messages are end-to-end encrypted. {conversation?.risk_level === 'high' && <span className="font-bold text-red-600 block mt-1">Status: High Priority Support</span>}</span>
                     </div>
                 </div>
 
                 {/* Messages */}
                 <AnimatePresence>
                     {messages.map((msg, idx) => {
-                        const isMe = msg.senderId === STUDENT_ID;
-                        if (msg.type === 'system') {
-                            return (
-                                <div key={idx} className="flex justify-center my-2">
-                                    <span className="bg-[#E1F3FB] text-slate-600 text-xs px-2 py-1 rounded-md shadow-sm border border-[#BEE2F3]">
-                                        {msg.text}
-                                    </span>
-                                </div>
-                            );
-                        }
+                        const isMe = msg.role === 'student';
 
                         return (
                             <motion.div
@@ -202,7 +159,11 @@ const ChatInterface = () => {
 
                                     <div className="flex justify-end items-center gap-1 mt-0.5">
                                         <span className="text-[10px] text-slate-500 font-medium">
-                                            {new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                            {/* We can parse msg.timestamp if needed, or mostly rely on it being ISO */}
+                                            {typeof msg.timestamp === 'string' && msg.timestamp.includes('T')
+                                                ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                                : "Just now"
+                                            }
                                         </span>
                                         {isMe && <CheckCheck size={14} className="text-[#53BDEB]" />}
                                     </div>
@@ -233,6 +194,7 @@ const ChatInterface = () => {
                         placeholder="Type a message"
                         rows={1}
                         style={{ minHeight: '24px' }}
+                        disabled={isSending}
                     />
                 </div>
 
@@ -242,6 +204,7 @@ const ChatInterface = () => {
                         ? "bg-[#008069] text-white hover:bg-[#006e5a] active:scale-95"
                         : "bg-[#008069] text-white hover:bg-[#006e5a]"
                         }`}
+                    disabled={isSending}
                 >
                     {inputText.trim() ? <Send size={20} className="ml-0.5" /> : <Mic size={20} />}
                 </button>

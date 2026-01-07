@@ -1,27 +1,26 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../services/api';
+import {
+    fetchQueue,
+    subscribeToQueue,
+    joinConversation,
+    sendMessage,
+    subscribeToConversation,
+    parseConversationLog,
+    subscribeToNotifications
+} from '../services/chatService';
 import {
     Video, MessageSquare, Clock, User, Phone, CheckCircle2,
     LayoutDashboard, History, Settings, LogOut, Bell,
     Search, Filter, Activity, TrendingUp, AlertCircle,
     Paperclip, Mic, Send, MoreVertical, ShieldAlert, CheckCheck, ArrowLeft
 } from 'lucide-react';
-import { io } from "socket.io-client";
 import { motion, AnimatePresence } from "framer-motion";
-
-const SOCKET_URL = import.meta.env.VITE_API_URL;
-// socket instance
-const socket = io(SOCKET_URL, {
-    path: "/socket.io",
-    transports: ["websocket"]
-});
-
-socket.on("connect", () => console.log("Connected ✅ on counsellor side"));
 
 const CounsellorDashboard = () => {
     const navigate = useNavigate();
     const counselorName = localStorage.getItem('user_name') || 'Counsellor';
+    const counselorId = localStorage.getItem('user_id') || 'counselor_01'; // Ideally actual ID
 
     const handleLogout = () => {
         localStorage.removeItem('auth_token');
@@ -36,120 +35,137 @@ const CounsellorDashboard = () => {
     const [activeNav, setActiveNav] = useState('dashboard');
     const [videoNotifications, setVideoNotifications] = useState([]);
 
-    // 1. Listen for Incoming Support Requests & Video Notifications
+    // 1. Listen for Queue Updates & Notifications (Supabase Realtime)
     useEffect(() => {
-        const handleConnect = () => {
-            console.log("[Socket] Counselor Connected/Reconnected");
-            // Rejoin all active sessions if reconnected
-            activeSessions.forEach(session => {
-                socket.emit("join_room", session.roomId);
+        let queueSub = null;
+        let notifSub = null;
+
+        const initDashboard = async () => {
+            // Initial Queue Load
+            const queue = await fetchQueue();
+            setIncomingRequests(queue.map(q => ({
+                id: q.id,
+                studentId: q.student_external_id || "Anonymous",
+                timestamp: q.created_at,
+                riskLevel: q.risk_level,
+                escalated: q.escalated
+            })));
+
+            // Subscribe to Queue
+            queueSub = subscribeToQueue((newReq) => {
+                setIncomingRequests(prev => {
+                    // check if we already have it
+                    const exists = prev.find(r => r.id === newReq.id);
+                    if (exists) {
+                        // Update existing
+                        return prev.map(r => r.id === newReq.id ? {
+                            ...r,
+                            riskLevel: newReq.risk_level,
+                            escalated: newReq.escalated
+                        } : r);
+                    }
+                    // Add new if unassigned
+                    if (!newReq.counsellor_id) {
+                        return [...prev, {
+                            id: newReq.id,
+                            studentId: newReq.student_external_id || "Anonymous",
+                            timestamp: newReq.created_at,
+                            riskLevel: newReq.risk_level,
+                            escalated: newReq.escalated
+                        }];
+                    }
+                    // If it was assigned to someone else (or us via another mechanism), remove from queue
+                    if (newReq.counsellor_id) {
+                        return prev.filter(r => r.id !== newReq.id);
+                    }
+                    return prev;
+                });
+            });
+
+            // Subscribe to Notifications (Video)
+            notifSub = subscribeToNotifications((item) => {
+                if (item.type === 'video_meeting') {
+                    setVideoNotifications(prev => [item.payload, ...prev].slice(0, 5));
+                }
             });
         };
 
-        socket.on("connect", handleConnect);
-
-        // Listen for new student requests
-        socket.on("receive_support_request", (request) => {
-            console.log("[Socket] New Request Received:", request);
-            setIncomingRequests(prev => {
-                // Check if already in list
-                if (prev.find(r => r.roomId === request.roomId)) return prev;
-                return [...prev, { ...request, timestamp: Date.now() }];
-            });
-        });
-
-        // Listen for video meeting notifications
-        socket.on("receive_video_notification", (notification) => {
-            console.log("[Socket] Video Meeting Notification:", notification);
-            setVideoNotifications(prev => [notification, ...prev].slice(0, 5)); // Keep last 5
-        });
-
-        // Optional: Listen for when a student leaves
-        socket.on("student_left", (roomId) => {
-            setIncomingRequests(prev => prev.filter(r => r.roomId !== roomId));
-        });
+        initDashboard();
 
         return () => {
-            socket.off("connect", handleConnect);
-            socket.off("receive_support_request");
-            socket.off("receive_video_notification");
-            socket.off("student_left");
+            if (queueSub) queueSub.unsubscribe();
+            if (notifSub) notifSub.unsubscribe();
         };
-    }, [activeSessions]);
-
-    const handleAcceptRequest = (request) => {
-        // 1. Join the Specific Chat Room
-        socket.emit("join_room", request.roomId);
-
-        // 2. Alert the Student that you've joined
-        socket.emit("counselor_joined_room", {
-            roomId: request.roomId,
-            counselor: { name: counselorName, id: "counselor_01" }
-        });
-
-        // 3. Move from Waiting to Active and open chat
-        setIncomingRequests(prev => prev.filter(r => r.roomId !== request.roomId));
-        setActiveSessions(prev => [...prev, request]);
-        setActiveChat(request);
-        setChatMessages([]);
-    };
+    }, []);
 
     const [activeChat, setActiveChat] = useState(null);
     const [chatMessages, setChatMessages] = useState([]);
     const [chatInput, setChatInput] = useState('');
+    const [activeChatSubscription, setActiveChatSubscription] = useState(null);
 
-    // Listen for chat messages
-    useEffect(() => {
-        const handleReceiveMessage = (data) => {
-            // Only add if it's for the current active chat AND not from self
-            if (activeChat && data.room === activeChat.roomId && data.senderId !== counselorName) {
-                setChatMessages((prev) => [...prev, data]);
-            }
-        };
+    const handleAcceptRequest = async (request) => {
+        // Assign to self via Supabase
+        await joinConversation(request.id, counselorId);
 
-        socket.on("receive_message", handleReceiveMessage);
+        // Optimistically remove from queue
+        setIncomingRequests(prev => prev.filter(r => r.id !== request.id));
 
-        return () => {
-            socket.off("receive_message", handleReceiveMessage);
-        };
-    }, [activeChat, counselorName]);
+        // Add to active sessions
+        const session = { ...request, roomId: request.id };
+        setActiveSessions(prev => [...prev, session]);
 
-    const handleSendMessage = () => {
+        // Open Chat
+        openChat(session);
+    };
+
+    const openChat = (session) => {
+        if (activeChatSubscription) activeChatSubscription.unsubscribe();
+
+        setActiveChat(session);
+        setChatMessages([]);
+
+        // Subscribe to this specific conversation's messages
+        const sub = subscribeToConversation(session.id, (updatedConv) => {
+            // Parse the latest content log
+            setChatMessages(parseConversationLog(updatedConv.content));
+        });
+        setActiveChatSubscription(sub);
+
+        // Initial load of messages (in case Realtime doesn't fire immediately on connect)
+        // Ideally we fetch the conversation once to get current state
+        import('../services/chatService').then(({ getConversation }) => {
+            getConversation(session.id).then(conv => {
+                if (conv) setChatMessages(parseConversationLog(conv.content));
+            });
+        });
+    };
+
+    const handleSendMessage = async () => {
         if (!chatInput.trim() || !activeChat) return;
-
-        const newMessage = {
-            room: activeChat.roomId,
-            text: chatInput,
-            senderId: counselorName,
-            role: 'counselor',
-            timestamp: new Date().toISOString(),
-        };
-
-        // Optimistic Update
-        setChatMessages((prev) => [...prev, newMessage]);
-
-        // Send to Socket
-        socket.emit("send_message", newMessage);
-
+        const text = chatInput;
         setChatInput('');
+
+        try {
+            await sendMessage(activeChat.id, 'counsellor', text);
+        } catch (err) {
+            console.error(err);
+            setChatInput(text);
+        }
     };
 
     const handleEndSession = (sessionId) => {
         if (!window.confirm("Are you sure you want to end this session?")) return;
 
-        // Remove from active sessions
+        // Remove from UI
         setActiveSessions(prev => prev.filter(s => s.roomId !== sessionId));
 
-        // Update metrics
-        setTotalSessions(prev => prev + 1);
-
-        // Close chat if it's the active one
         if (activeChat?.roomId === sessionId) {
             setActiveChat(null);
+            if (activeChatSubscription) activeChatSubscription.unsubscribe();
         }
 
-        // Optional: Notify student that session ended (via socket)
-        // socket.emit("end_session", { roomId: sessionId });
+        // Optional: Mark as completed in DB?
+        // await supabase.from('conversations').update({ risk_level: 'completed' }).eq('id', sessionId);
     };
 
     const sideBarItems = [
@@ -301,7 +317,7 @@ const CounsellorDashboard = () => {
                                         ) : (
                                             incomingRequests.map((req) => (
                                                 <motion.div
-                                                    key={req.roomId}
+                                                    key={req.id}
                                                     layout
                                                     initial={{ transform: 'scale(0.9)', opacity: 0 }}
                                                     animate={{ transform: 'scale(1)', opacity: 1 }}
@@ -314,11 +330,13 @@ const CounsellorDashboard = () => {
                                                         </div>
                                                         <div>
                                                             <div className="flex items-center gap-3 mb-1">
-                                                                <h4 className="font-black text-slate-900 text-xl tracking-tight">{req.studentId || "Student #" + req.roomId.slice(-4)}</h4>
-                                                                <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-lg uppercase tracking-tight">Priority</span>
+                                                                <h4 className="font-black text-slate-900 text-xl tracking-tight">{req.studentId}</h4>
+                                                                {(req.escalated || req.riskLevel === 'high') && (
+                                                                    <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-lg uppercase tracking-tight">Risk Alert</span>
+                                                                )}
                                                             </div>
                                                             <div className="flex items-center gap-4 text-sm font-bold text-slate-400">
-                                                                <span className="flex items-center gap-1.5"><Clock size={16} /> Waiting {Math.floor((Date.now() - (req.timestamp || Date.now())) / 60000)}m</span>
+                                                                <span className="flex items-center gap-1.5"><Clock size={16} /> Queued {Math.floor((Date.now() - new Date(req.timestamp).getTime()) / 60000)}m ago</span>
                                                                 <span className="w-1 h-1 bg-slate-200 rounded-full"></span>
                                                                 <span className="flex items-center gap-1.5"><Activity size={16} className="text-emerald-500" /> Chat Session</span>
                                                             </div>
@@ -358,7 +376,7 @@ const CounsellorDashboard = () => {
                                         <AnimatePresence>
                                             {videoNotifications.map((notif, i) => (
                                                 <motion.div
-                                                    key={notif.timestamp}
+                                                    key={i} // Use Index as notification might be ephemeral
                                                     initial={{ x: 20, opacity: 0 }}
                                                     animate={{ x: 0, opacity: 1 }}
                                                     exit={{ x: -20, opacity: 0 }}
@@ -392,7 +410,6 @@ const CounsellorDashboard = () => {
                                                         <button
                                                             onClick={() => {
                                                                 setVideoNotifications(prev => prev.filter((_, idx) => idx !== i));
-                                                                setTotalSessions(prev => prev + 1);
                                                             }}
                                                             className="bg-red-500/20 text-white px-3 py-2.5 rounded-xl hover:bg-red-500/40 transition-all"
                                                             title="End/Dismiss"
@@ -408,63 +425,9 @@ const CounsellorDashboard = () => {
                                 </div>
                             )}
 
-                            {/* Active Sessions Mini-Panel */}
-                            <div className="bg-slate-900 text-white rounded-[3rem] p-8 shadow-2xl relative overflow-hidden group">
-                                <div className="flex items-center justify-between mb-8 relative z-10">
-                                    <h3 className="font-black text-xl tracking-tight flex items-center gap-3">
-                                        <div className="w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
-                                        Active Chats
-                                    </h3>
-                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">In Progress</span>
-                                </div>
-
-                                <div className="space-y-4 relative z-10">
-                                    <AnimatePresence>
-                                        {activeSessions.length === 0 ? (
-                                            <div className="py-8 text-center bg-white/5 rounded-3xl border border-white/5">
-                                                <p className="text-white/30 font-bold text-xs uppercase tracking-widest">No active sessions</p>
-                                            </div>
-                                        ) : (
-                                            activeSessions.map((session, i) => (
-                                                <motion.div
-                                                    initial={{ x: 20, opacity: 0 }}
-                                                    animate={{ x: 0, opacity: 1 }}
-                                                    key={i}
-                                                    className="bg-white/10 backdrop-blur-xl rounded-[2rem] p-5 border border-white/10 flex items-center justify-between group/item hover:bg-white/20 transition-all cursor-pointer"
-                                                >
-                                                    <div className="flex items-center gap-4">
-                                                        <div className="w-10 h-10 bg-brand-500 rounded-xl flex items-center justify-center text-xs font-black shadow-lg shadow-brand-900/40">
-                                                            {session.studentId?.[0] || 'S'}
-                                                        </div>
-                                                        <div>
-                                                            <span className="text-sm font-black block">{session.studentId || "Anonymous"}</span>
-                                                            <span className="text-[10px] text-white/50 font-bold">12:30 PM Started</span>
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex items-center gap-3">
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleEndSession(session.roomId);
-                                                            }}
-                                                            className="p-2 hover:bg-white/20 rounded-xl text-white/50 hover:text-red-300 transition-colors"
-                                                            title="End Session"
-                                                        >
-                                                            <LogOut size={16} />
-                                                        </button>
-                                                        <CheckCircle2 size={18} className="text-brand-400 opacity-0 group-item-hover:opacity-100 transition-opacity" />
-                                                    </div>
-                                                </motion.div>
-                                            ))
-                                        )}
-                                    </AnimatePresence>
-                                </div>
-                                <div className="absolute -bottom-24 -left-24 w-64 h-64 bg-brand-600/20 rounded-full blur-3xl group-hover:scale-125 transition-transform duration-700"></div>
-                            </div>
-
                             {/* System Status / Quick Log */}
                             <div className="bg-white rounded-[3rem] p-8 border border-slate-100 shadow-soft">
-                                <h3 className="font-black text-lg text-slate-800 mb-6 flex items-center justify-between tracking-tight">
+                                <h3 className="font-black text-lg text-slate-800 mb-6 flex items-center justify-center lg:justify-between tracking-tight">
                                     System Status
                                     <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
                                 </h3>
@@ -489,6 +452,61 @@ const CounsellorDashboard = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {/* Active Sessions Mini-Panel */}
+                            <div className="bg-slate-900 text-white rounded-[3rem] p-8 shadow-2xl relative overflow-hidden group">
+                                <div className="flex items-center justify-between mb-8 relative z-10">
+                                    <h3 className="font-black text-xl tracking-tight flex items-center gap-3">
+                                        <div className="w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
+                                        Active Chats
+                                    </h3>
+                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">In Progress</span>
+                                </div>
+
+                                <div className="space-y-4 relative z-10">
+                                    <AnimatePresence>
+                                        {activeSessions.length === 0 ? (
+                                            <div className="py-8 text-center bg-white/5 rounded-3xl border border-white/5">
+                                                <p className="text-white/30 font-bold text-xs uppercase tracking-widest">No active sessions</p>
+                                            </div>
+                                        ) : (
+                                            activeSessions.map((session, i) => (
+                                                <motion.div
+                                                    initial={{ x: 20, opacity: 0 }}
+                                                    animate={{ x: 0, opacity: 1 }}
+                                                    key={i}
+                                                    onClick={() => openChat(session)}
+                                                    className="bg-white/10 backdrop-blur-xl rounded-[2rem] p-5 border border-white/10 flex items-center justify-between group/item hover:bg-white/20 transition-all cursor-pointer"
+                                                >
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="w-10 h-10 bg-brand-500 rounded-xl flex items-center justify-center text-xs font-black shadow-lg shadow-brand-900/40">
+                                                            {session.studentId?.[0] || 'S'}
+                                                        </div>
+                                                        <div>
+                                                            <span className="text-sm font-black block">{session.studentId || "Anonymous"}</span>
+                                                            <span className="text-[10px] text-white/50 font-bold">In Session</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-3">
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleEndSession(session.roomId || session.id);
+                                                            }}
+                                                            className="p-2 hover:bg-white/20 rounded-xl text-white/50 hover:text-red-300 transition-colors"
+                                                            title="End Session"
+                                                        >
+                                                            <LogOut size={16} />
+                                                        </button>
+                                                        <CheckCircle2 size={18} className="text-brand-400 opacity-0 group-item-hover:opacity-100 transition-opacity" />
+                                                    </div>
+                                                </motion.div>
+                                            ))
+                                        )}
+                                    </AnimatePresence>
+                                </div>
+                                <div className="absolute -bottom-24 -left-24 w-64 h-64 bg-brand-600/20 rounded-full blur-3xl group-hover:scale-125 transition-transform duration-700"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -502,7 +520,10 @@ const CounsellorDashboard = () => {
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-0 md:p-4"
-                        onClick={() => setActiveChat(null)}
+                        onClick={() => {
+                            setActiveChat(null);
+                            if (activeChatSubscription) activeChatSubscription.unsubscribe();
+                        }}
                     >
                         <motion.div
                             initial={{ scale: 0.95, opacity: 0 }}
@@ -536,7 +557,7 @@ const CounsellorDashboard = () => {
 
                                 <div className="flex items-center gap-4 text-white/80">
                                     <button
-                                        onClick={() => handleEndSession(activeChat.roomId)}
+                                        onClick={() => handleEndSession(activeChat.id)}
                                         className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-tight transition-all"
                                     >
                                         End Session
@@ -559,7 +580,7 @@ const CounsellorDashboard = () => {
 
                                 <AnimatePresence>
                                     {chatMessages.map((msg, idx) => {
-                                        const isCounselor = msg.role === 'counselor';
+                                        const isCounselor = msg.role === 'counsellor';
                                         return (
                                             <motion.div
                                                 key={idx}
@@ -583,7 +604,10 @@ const CounsellorDashboard = () => {
                                                     <p>{msg.text}</p>
                                                     <div className="flex justify-end items-center gap-1 mt-0.5">
                                                         <span className="text-[10px] text-slate-500 font-medium">
-                                                            {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                            {typeof msg.timestamp === 'string' && msg.timestamp.includes('T')
+                                                                ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                                                : "Just now"
+                                                            }
                                                         </span>
                                                         {isCounselor && <CheckCheck size={14} className="text-[#53BDEB]" />}
                                                     </div>

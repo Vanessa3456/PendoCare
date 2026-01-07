@@ -1,214 +1,195 @@
-// Note: This service requires '@' alias configured to point to 'src'
-// and 'integrations/supabase/client' to exist.
-// import { supabase } from "@/integrations/supabase/client";
 
-/**
- * Fetch a chat session by ID
- */
-export async function fetchSession(sessionId) {
-    try {
-        const { data, error } = await supabase
-            .from('chat_sessions')
-            .select('*')
-            .eq('id', sessionId)
-            .single();
+import { supabase } from '../supabase';
 
-        if (error) {
-            console.error('Error fetching session:', error);
-            return null;
+export function parseConversationLog(logText) {
+    if (!logText) return [];
+
+    const lines = logText.split('\n').filter(line => line.trim() !== '');
+
+    return lines.map((line, index) => {
+        const match = line.match(/^\[(.*?)\] (.*?): (.*)$/);
+
+        if (match) {
+            return {
+                id: index,
+                timestamp: match[1],
+                role: match[2].toLowerCase(),
+                text: match[3],
+                senderId: match[2]
+            };
         }
-
-        return data;
-    } catch (err) {
-        console.error('Error in fetchSession:', err);
-        return null;
-    }
+        return {
+            id: index,
+            timestamp: new Date().toISOString(),
+            role: 'unknown',
+            text: line,
+            senderId: 'Unknown'
+        };
+    });
 }
 
 /**
- * Fetch all messages for a session
+ * Creates or retrieves a conversation for a student (by Access Code).
  */
-export async function fetchMessages(sessionId) {
-    try {
-        const { data, error } = await supabase
-            .from('chat_messages')
-            .select('*')
-            .eq('session_id', sessionId)
-            .order('created_at', { ascending: true });
+export async function getOrCreateConversation(studentExternalId) {
+    // 1. Try to find an open existing conversation
+    const { data: existing, error: findError } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('student_external_id', studentExternalId)
+        .neq('risk_level', 'completed') // Assuming we might mark completed later
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
 
-        if (error) {
-            console.error('Error fetching messages:', error);
-            return [];
-        }
+    if (existing && !findError) {
+        return existing;
+    }
 
-        return data || [];
-    } catch (err) {
-        console.error('Error in fetchMessages:', err);
+    // 2. Create new if none exists
+    const { data, error } = await supabase
+        .from('conversations')
+        .insert([{
+            student_external_id: studentExternalId,
+            content: '',
+            risk_level: 'none',
+            escalated: false
+        }])
+        .select()
+        .single();
+
+    if (error) {
+        console.error('Error creating conversation:', error);
+        return null;
+    }
+    return data;
+}
+
+export async function sendMessage(conversationId, role, message) {
+    if (!message || !message.trim()) return null;
+
+    const { error } = await supabase.rpc('append_chat_message', {
+        p_conversation_id: conversationId,
+        p_role: role.toUpperCase(),
+        p_message: message.trim()
+    });
+
+    if (error) {
+        console.error('Error sending message:', error);
+        return null;
+    }
+    return true;
+}
+
+export async function getConversation(conversationId) {
+    const { data, error } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('id', conversationId)
+        .single();
+
+    if (error) {
+        console.error('Error fetching conversation:', error);
+        return null;
+    }
+    return data;
+}
+
+/**
+ * Subscribes to changes in a specific conversation.
+ */
+export function subscribeToConversation(conversationId, onUpdate) {
+    return supabase
+        .channel(`chat:${conversationId}`)
+        .on(
+            'postgres_changes',
+            {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'conversations',
+                filter: `id=eq.${conversationId}`
+            },
+            (payload) => {
+                onUpdate(payload.new);
+            }
+        )
+        .subscribe();
+}
+
+/**
+ * (Counsellor) Fetches the queue (Escalated or Unassigned).
+ */
+export async function fetchQueue() {
+    // Fetch critical/high risk first, then general unassigned
+    const { data, error } = await supabase
+        .from('conversations')
+        .select('*')
+        .is('counsellor_id', null)
+        .order('escalated', { ascending: false })
+        .order('created_at', { ascending: true });
+
+    if (error) {
+        console.error('Error fetching queue:', error);
         return [];
     }
+    return data;
 }
 
 /**
- * Send a message to a chat session
+ * (Counsellor) Listens for ANY high risk escalation or new unassigned chat.
  */
-export async function sendMessage(
-    sessionId,
-    senderId,
-    content,
-    metadata = {}
-) {
-    try {
-        const { data, error } = await supabase
-            .from('chat_messages')
-            .insert({
-                session_id: sessionId,
-                sender_id: senderId,
-                content: content.trim(),
-                metadata,
-                is_ai: false
-            })
-            .select()
-            .single();
-
-        if (error) {
-            console.error('Error sending message:', error);
-            return null;
-        }
-
-        return data;
-    } catch (err) {
-        console.error('Error in sendMessage:', err);
-        return null;
-    }
-}
-
-/**
- * Create a new chat session using backend API
- */
-export async function createChatSessionBackend(token, topic) {
-    try {
-        const response = await fetch('/api/chat/sessions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json',
+export function subscribeToQueue(onUpdate) {
+    return supabase
+        .channel('global_queue')
+        .on(
+            'postgres_changes',
+            {
+                event: '*', // Listen to INSERT (new chats) and UPDATE (escalations)
+                schema: 'public',
+                table: 'conversations'
             },
-            body: JSON.stringify({ topic }),
-        });
+            (payload) => {
+                // Filter client side for now to be safe
+                const rec = payload.new;
+                if (!rec) return;
 
-        if (!response.ok) {
-            console.error('Failed to create session via backend');
-            return null;
-        }
-
-        const { session } = await response.json();
-        return session;
-    } catch (err) {
-        console.error('Error in createChatSessionBackend:', err);
-        return null;
-    }
+                // We care if it's escalated OR if it's unassigned
+                if (rec.escalated || !rec.counsellor_id) {
+                    onUpdate(rec);
+                }
+            }
+        )
+        .subscribe();
 }
 
-/**
- * Create a chat session directly (for authenticated users)
- */
-export async function createChatSession(userId) {
-    try {
-        const { data, error } = await supabase
-            .from('chat_sessions')
-            .insert({
-                student_id: userId,
-                status: 'pending',
-            })
-            .select()
-            .single();
+export async function joinConversation(conversationId, counsellorId) {
+    const { data, error } = await supabase
+        .from('conversations')
+        .update({ counsellor_id: counsellorId })
+        .eq('id', conversationId)
+        .select()
+        .single();
 
-        if (error) {
-            console.error('Error creating session:', error);
-            return null;
-        }
-
-        return data;
-    } catch (err) {
-        console.error('Error in createChatSession:', err);
+    if (error) {
+        console.error('Error joining conversation:', error);
         return null;
     }
+    return data;
 }
 
-/**
- * Get or create active session for a user
- */
-export async function getOrCreateSession(userId) {
-    try {
-        // Try to get existing active session
-        const { data: existingSessions } = await supabase
-            .from('chat_sessions')
-            .select('*')
-            .eq('student_id', userId)
-            .in('status', ['pending', 'active'])
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-        if (existingSessions && existingSessions.length > 0) {
-            return existingSessions[0];
-        }
-
-        // Create new session if none exists
-        return await createChatSession(userId);
-    } catch (err) {
-        console.error('Error in getOrCreateSession:', err);
-        return null;
-    }
-}
-
-/**
- * Subscribe to new messages in a session
- */
-export function subscribeToMessages(
-    sessionId,
-    callback
-) {
-    const channel = supabase
-        .channel(`chat:${sessionId}`)
+export function subscribeToNotifications(onNotification) {
+    return supabase
+        .channel('global_notifications')
         .on(
             'postgres_changes',
             {
                 event: 'INSERT',
                 schema: 'public',
-                table: 'chat_messages',
-                filter: `session_id=eq.${sessionId}`
+                table: 'notifications'
             },
             (payload) => {
-                callback(payload.new);
+                onNotification(payload.new);
             }
         )
         .subscribe();
-
-    // Return unsubscribe function
-    return () => {
-        supabase.removeChannel(channel);
-    };
-}
-
-
-/**
- * Close a chat session
- */
-export async function closeSession(sessionId) {
-    try {
-        const { error } = await supabase
-            .from('chat_sessions')
-            .update({ status: 'closed', updated_at: new Date().toISOString() })
-            .eq('id', sessionId);
-
-        if (error) {
-            console.error('Error closing session:', error);
-            return false;
-        }
-
-        return true;
-    } catch (err) {
-        console.error('Error in closeSession:', err);
-        return false;
-    }
 }

@@ -60,7 +60,7 @@ const GoogleMeetCounseling = () => {
     useEffect(() => {
         const fetchCounselors = async () => {
             try {
-                const response = await api.get('/admin/counselors');
+                const response = await api.get('/api/counselors');
                 const data = response.data;
 
                 // Filter by school name from localStorage
@@ -68,6 +68,7 @@ const GoogleMeetCounseling = () => {
                     ? data.filter(c => c.assigned_school === schoolName)
                     : data;
 
+                console.log(filteredData);
                 // Map DB data to UI format
                 const mappedCounselors = filteredData.map(c => ({
                     ...c,
