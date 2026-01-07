@@ -59,7 +59,7 @@ const GoogleMeetCounseling = () => {
     useEffect(() => {
         const fetchCounselors = async () => {
             try {
-                const response = await api.get('/counselors');
+                const response = await api.get('/api/counselors');
                 const data = response.data;
 
                 // Filter by school name from localStorage
