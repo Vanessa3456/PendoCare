@@ -53,7 +53,6 @@ const GoogleMeetCounseling = () => {
         meetLink: ''
     });
     const [submitted, setSubmitted] = useState(false);
-    const [counselorAvailability, setCounselorAvailability] = useState({});
     const [loading, setLoading] = useState(true);
 
     // Fetch Counselors from DB (Filtered by School)
@@ -88,28 +87,7 @@ const GoogleMeetCounseling = () => {
         fetchCounselors();
     }, [schoolName]);
 
-    // Check counselor availability
-    useEffect(() => {
-        if (counselors.length === 0) return;
 
-        const checkAvailability = async () => {
-            const availability = {};
-            for (const counselor of counselors) {
-                try {
-                    const response = await api.get(`/counselor-availability/${counselor.id}`);
-                    const data = response.data;
-                    availability[counselor.id] = data.available;
-                } catch (error) {
-                    availability[counselor.id] = true; // Default to available
-                }
-            }
-            setCounselorAvailability(availability);
-        };
-
-        checkAvailability();
-        const interval = setInterval(checkAvailability, 15000);
-        return () => clearInterval(interval);
-    }, [counselors]);
 
     const updateFormData = (field, value) => {
         if (field === 'counselorId') {
@@ -282,7 +260,7 @@ const GoogleMeetCounseling = () => {
 
                         <div className="grid gap-4">
                             {counselors.map(counselor => {
-                                const isAvailable = counselorAvailability[counselor.id] !== false;
+                                const isAvailable = true; // Always available per user request
                                 const isSelected = formData.counselorId === counselor.id;
 
                                 return (

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { supabase } from '../supabase';
 import { useNavigate } from 'react-router-dom';
 import {
     fetchQueue,
@@ -50,6 +51,24 @@ const CounsellorDashboard = () => {
                 riskLevel: q.risk_level,
                 escalated: q.escalated
             })));
+
+            // Fetch Counselor's Active Sessions (Non-completed)
+            const { data: active, error: activeErr } = await supabase
+                .from('conversations')
+                .select('*')
+                .eq('counsellor_id', counselorId)
+                .neq('risk_level', 'completed');
+
+            if (!activeErr && active) {
+                setActiveSessions(active.map(s => ({
+                    id: s.id,
+                    roomId: s.id,
+                    studentId: s.student_external_id || "Anonymous",
+                    timestamp: s.created_at,
+                    riskLevel: s.risk_level,
+                    escalated: s.escalated
+                })));
+            }
 
             // Subscribe to Queue
             queueSub = subscribeToQueue((newReq) => {
@@ -153,24 +172,34 @@ const CounsellorDashboard = () => {
         }
     };
 
-    const handleEndSession = (sessionId) => {
+    const handleEndSession = async (sessionId) => {
         if (!window.confirm("Are you sure you want to end this session?")) return;
 
-        // Remove from UI
-        setActiveSessions(prev => prev.filter(s => s.roomId !== sessionId));
+        try {
+            // Mark as completed in DB - This makes it "invisible" to the counselor's active views
+            // and ensures it doesn't show up in their current session list if they were to refresh.
+            const { error } = await supabase
+                .from('conversations')
+                .update({ risk_level: 'completed' })
+                .eq('id', sessionId);
 
-        if (activeChat?.roomId === sessionId) {
-            setActiveChat(null);
-            if (activeChatSubscription) activeChatSubscription.unsubscribe();
+            if (error) throw error;
+
+            // Remove from UI
+            setActiveSessions(prev => prev.filter(s => (s.roomId || s.id) !== sessionId));
+
+            if (activeChat?.roomId === sessionId || activeChat?.id === sessionId) {
+                setActiveChat(null);
+                if (activeChatSubscription) activeChatSubscription.unsubscribe();
+            }
+        } catch (err) {
+            console.error('Error ending session:', err);
+            alert('Failed to end session properly. Please try again.');
         }
-
-        // Optional: Mark as completed in DB?
-        // await supabase.from('conversations').update({ risk_level: 'completed' }).eq('id', sessionId);
     };
 
     const sideBarItems = [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-        { id: 'history', label: 'Session History', icon: History },
         { id: 'alerts', label: 'Urgent Alerts', icon: AlertCircle },
         { id: 'settings', label: 'Profile Settings', icon: Settings },
     ];

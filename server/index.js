@@ -528,6 +528,27 @@ app.delete('/api/admin/counselors/:id', async (req, res) => {
     }
 });
 
+// Admin Route to view all sessions (Active and Completed)
+app.get('/api/admin/conversations', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('conversations')
+            .select(`
+                *,
+                counselors (
+                    name
+                )
+            `)
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        return res.json(data);
+    } catch (err) {
+        console.error('[Error] Admin Fetch Conversations:', err);
+        return res.status(500).json({ error: 'Failed to fetch conversations' });
+    }
+});
+
 /**
  * 3. Gemini Chat Integration
  */
@@ -555,8 +576,7 @@ app.post('/api/chat/gemini', authenticateToken, authorizeRoles('student'), async
     }
 });
 
-// --- Counselor & Session State (In-memory for demo, should be DB in prod) ---
-const counselorSessions = {}; // counselorId -> { available: boolean, studentEmail: string, endTime: number }
+// --- Session State Removed (Using Database and Realtime instead) ---
 
 /**
  * 4. Save Triage Result
@@ -583,20 +603,10 @@ app.post('/api/triage', authenticateToken, authorizeRoles('student'), async (req
     }
 });
 
-/**
- * 5. Counselor Availability & Video Sessions
- */
-app.get('/api/counselor-availability/:id', (req, res) => {
-    const { id } = req.params;
-    const session = counselorSessions[id];
-    const available = !session || Date.now() > session.endTime;
-    res.json({ available });
-});
+
 
 app.post('/api/start-session', authenticateToken, authorizeRoles('counsellor', 'admin'), (req, res) => {
-    const { counselorId, studentEmail, endTime } = req.body;
-    counselorSessions[counselorId] = { available: false, studentEmail, endTime };
-    console.log(`[Session] Counselor ${counselorId} is now BUSY until ${new Date(endTime).toLocaleTimeString()}`);
+    // Session tracking moved to Database/Realtime notification flow
     res.json({ success: true });
 });
 
