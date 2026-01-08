@@ -56,23 +56,28 @@ const model = genAI.getGenerativeModel({
 });
 
 // --- Email Transporter ---
+// FIX: Automatically switch to Secure Mode if on Railway (Port 465)
+const isSecure = process.env.EMAIL_PORT == 465;
+
 const transporter = nodemailer.createTransport({
     host: process.env.EMAIL_HOST,
     port: process.env.EMAIL_PORT,
-    secure: false,
+    secure: isSecure, // True for Railway (465), False for Localhost (587)
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
     },
     tls: {
-        rejectUnauthorized: false  // For Gmail
+        rejectUnauthorized: false 
     }
 });
+
+// Verify connection configuration
 transporter.verify(function (error, success) {
     if (error) {
-        console.error('[Email] Configuration Error:', error);
+        console.error('[Email Warning] Transporter Error:', error.message);
     } else {
-        console.log('[Email] Server is ready to send emails ✓');
+        console.log(`[Email] Server is ready to send emails (Secure Mode: ${isSecure})`);
     }
 });
 // --- Auth Middlewares ---
