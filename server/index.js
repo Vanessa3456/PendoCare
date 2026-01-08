@@ -622,28 +622,45 @@ app.post('/api/start-session', authenticateToken, authorizeRoles('student', 'cou
 });
 
 app.post('/api/send-meeting-link', authenticateToken, authorizeRoles('student', 'counsellor', 'admin'), async (req, res) => {
+    // 1. Extract Data
     const { studentEmail, counselorEmail, counselorName, date, time, meetLink } = req.body;
 
+    console.log(`[Meeting] Request to notify: Counselor (${counselorEmail}) about Student (${studentEmail})`);
+
     try {
+        // 2. CHECK: Does the counselor actually have an email?
+        if (!counselorEmail || !counselorEmail.includes('@')) {
+            console.log("[Meeting] Skipped email: Invalid counselor email address.");
+            return res.json({ success: true, message: "Session created, but counselor had no email." });
+        }
+
+        // 3. FIX: Only send email to the Counselor (Ignore the fake student email)
         const mailOptions = {
             from: `"Pendo Counseling" <${process.env.EMAIL_USER}>`,
-            to: `${studentEmail}, ${counselorEmail}`, // Alert both
-            subject: "Pendo Counseling: Your Video Session is Ready",
-            text: `Hello,\n\nA counseling session has been scheduled between Student (${studentEmail}) and ${counselorName}.\n\nDate: ${date}\nTime: ${time}\n\nJoin the session here: ${meetLink}`,
+            to: counselorEmail, // <--- CHANGE: Only sending to Counselor
+            subject: "Pendo Counseling: New Session Booked",
+            text: `Hello ${counselorName},\n\nA student (${studentEmail}) has started a session.\n\nJoin here: ${meetLink}`,
             html: `
-                <h3>Pendo Counseling Session</h3>
-                <p><b>Counselor:</b> ${counselorName}</p>
-                <p><b>Date:</b> ${date}</p>
-                <p><b>Time:</b> ${time}</p>
-                <p>Your private meeting room is ready. Click below to join:</p>
-                <a href="${meetLink}" style="display:inline-block; padding:12px 24px; background:#008069; color:white; text-decoration:none; border-radius:8px; font-weight:bold;">Join Meeting Now</a>
+                <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+                    <h2 style="color: #008069;">New Session Alert</h2>
+                    <p>Hello <strong>${counselorName}</strong>,</p>
+                    <p>A student has requested a video session immediately.</p>
+                    
+                    <div style="background: #f0fdfa; padding: 15px; margin: 20px 0; border-radius: 8px;">
+                        <p><strong>Student:</strong> ${studentEmail}</p>
+                        <p><strong>Date:</strong> ${date}</p>
+                        <p><strong>Time:</strong> ${time}</p>
+                    </div>
+
+                    <a href="${meetLink}" style="display:inline-block; padding:12px 24px; background:#008069; color:white; text-decoration:none; border-radius:8px; font-weight:bold;">Join Meeting Room</a>
+                </div>
             `
         };
 
         await transporter.sendMail(mailOptions);
-        console.log(`[Email] Meeting links sent to ${studentEmail} and ${counselorEmail}`);
+        console.log(`[Email] Meeting link sent to Counselor: ${counselorEmail}`);
 
-        // Insert Notification into Supabase for Real-time Dashboard Alert
+        // 4. Save Notification to Database (Keep this)
         const { error: notifError } = await supabase
             .from('notifications')
             .insert([{
@@ -658,17 +675,15 @@ app.post('/api/send-meeting-link', authenticateToken, authorizeRoles('student', 
                 }
             }]);
 
-        if (notifError) {
-            console.error('[DB Error] Notification Insert:', notifError);
-        }
+        if (notifError) console.error('[DB Error] Notification Insert:', notifError);
 
         res.json({ success: true });
     } catch (err) {
         console.error('[Email Error] Failed to send meeting link:', err);
-        res.status(500).json({ error: 'Failed to send notification' });
+        // We still return 200 success so the student isn't blocked from the video call
+        res.status(200).json({ success: true, warning: "Email failed but session started" });
     }
 });
-
 /**
  * 6. Save Chat Message to DB
  */
