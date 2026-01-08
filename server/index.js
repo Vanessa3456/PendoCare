@@ -73,13 +73,13 @@ const transporter = nodemailer.createTransport({
 });
 
 // Verify connection configuration
-transporter.verify(function (error, success) {
-    if (error) {
-        console.error('[Email Warning] Transporter Error:', error.message);
-    } else {
-        console.log(`[Email] Server is ready to send emails (Secure Mode: ${isSecure})`);
-    }
-});
+// transporter.verify(function (error, success) {
+//     if (error) {
+//         console.error('[Email Warning] Transporter Error:', error.message);
+//     } else {
+//         console.log(`[Email] Server is ready to send emails (Secure Mode: ${isSecure})`);
+//     }
+// });
 // --- Auth Middlewares ---
 
 const authenticateToken = (req, res, next) => {
